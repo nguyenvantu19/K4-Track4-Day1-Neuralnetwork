@@ -1,4 +1,4 @@
-"""model.py — PSEUDO-CODE. Bạn phải tự hoàn thiện mọi hàm/class có `raise NotImplementedError`.
+"""model.py — MLP và các tiện ích khởi tạo/kiểm tra mô hình.
 
 Model: MLP cho bài toán 7 lớp, shape cố định (xem README mục 3 và GUIDE, "Quy định kiến trúc"):
 
@@ -36,16 +36,27 @@ class MLP(nn.Module):
     def __init__(self, hidden=(256, 128), dropout: float = 0.0, init: str = "he",
                  in_features: int = 54, num_classes: int = 7):
         super().__init__()
-        # TODO các bước:
-        #   1. dựng danh sách lớp: với mỗi h trong hidden: Linear(in, h), ReLU, Dropout(dropout)
-        #   2. thêm Linear(h_cuối, num_classes) làm lớp ra
-        #   3. gộp bằng nn.Sequential (hoặc tự viết forward), lưu vào self.net
-        #   4. gọi init_weights(self, init)
-        raise NotImplementedError
+        if not hidden or any(not isinstance(h, int) or h <= 0 for h in hidden):
+            raise ValueError("hidden phải là tuple/list không rỗng gồm các số nguyên dương")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout phải thuộc [0, 1)")
+        if in_features <= 0 or num_classes <= 1:
+            raise ValueError("in_features và num_classes không hợp lệ")
+
+        layers: list[nn.Module] = []
+        previous = in_features
+        for width in hidden:
+            layers.extend((nn.Linear(previous, width, bias=True), nn.ReLU()))
+            if dropout > 0:
+                layers.append(nn.Dropout(p=dropout))
+            previous = width
+        layers.append(nn.Linear(previous, num_classes, bias=True))
+        self.net = nn.Sequential(*layers)
+        init_weights(self, init)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, 54) float32  ->  logits: (B, 7) float32."""
-        raise NotImplementedError  # TODO
+        return self.net(x)
 
 
 def init_weights(model: nn.Module, init: str) -> None:
@@ -59,12 +70,29 @@ def init_weights(model: nn.Module, init: str) -> None:
         "default" : không làm gì (giữ khởi tạo mặc định của nn.Linear; KHÔNG phải He)
     Gợi ý: duyệt model.modules(), chọn isinstance(m, nn.Linear).
     """
-    raise NotImplementedError  # TODO
+    valid_inits = {"zeros", "normal", "xavier", "he", "default"}
+    if init not in valid_inits:
+        raise ValueError(f"init phải là một trong {sorted(valid_inits)}, nhận được {init!r}")
+
+    for module in model.modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        if init == "zeros":
+            nn.init.zeros_(module.weight)
+        elif init == "normal":
+            nn.init.normal_(module.weight, mean=0.0, std=0.01)
+        elif init == "xavier":
+            nn.init.xavier_normal_(module.weight)
+        elif init == "he":
+            nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
+        # ``default`` deliberately keeps PyTorch's Linear weight initialization.
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
 
 
 def count_params(model: nn.Module) -> int:
     """Tổng số tham số huấn luyện được. Dùng để assert với EXPECTED_PARAMS ngay sau khi tạo model."""
-    raise NotImplementedError  # TODO
+    return sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
 
 
 @torch.no_grad()
@@ -76,4 +104,14 @@ def activation_stats(model: nn.Module, x: torch.Tensor) -> list[float]:
       2. duyệt từng lớp con theo thứ tự; sau mỗi nn.Linear (hoặc sau mỗi ReLU, bạn chọn và ghi rõ) lưu h.std().item()
       3. trả về danh sách std theo lớp
     """
-    raise NotImplementedError  # TODO
+    was_training = model.training
+    model.eval()
+    h = x
+    stats: list[float] = []
+    for layer in model.net:
+        h = layer(h)
+        # Record pre-activation outputs of every affine layer, including logits.
+        if isinstance(layer, nn.Linear):
+            stats.append(h.std(unbiased=False).item())
+    model.train(was_training)
+    return stats
